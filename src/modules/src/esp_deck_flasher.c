@@ -85,7 +85,6 @@ bool espDeckFlasherWrite(const uint32_t memAddr, const uint8_t writeLen, const u
             DEBUG_PRINT("Failed to start flashing\n");
             return 0;
         }
-        hasStarted
             sequence_number = 0;
         send_buffer_idx = 0;
     }
