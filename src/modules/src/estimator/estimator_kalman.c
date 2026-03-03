@@ -280,6 +280,11 @@ static void kalmanTask(void* parameters) {
      */
     xSemaphoreTake(dataMutex, portMAX_DELAY);
     kalmanCoreExternalizeState(&coreData, &taskEstimatorState, &accLatest);
+    uint32_t nowTicks = M2T(nowMs);
+    taskEstimatorState.position.timestamp = nowTicks;
+    taskEstimatorState.velocity.timestamp = nowTicks;
+    taskEstimatorState.acc.timestamp = nowTicks;
+    taskEstimatorState.attitude.timestamp = nowTicks;
     xSemaphoreGive(dataMutex);
 
     STATS_CNT_RATE_EVENT(&updateCounter);
