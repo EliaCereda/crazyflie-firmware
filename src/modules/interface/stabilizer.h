@@ -31,6 +31,9 @@
 
 #include "estimator.h"
 
+typedef struct stateCompressed_s stateCompressed_t;
+typedef struct state_s state_t;
+
 /**
  * Initialize the stabilizer subsystem and launch the stabilizer loop task.
  * The stabilizer loop task will wait on systemWaitStart() before running.
@@ -43,5 +46,13 @@ void stabilizerInit(StateEstimatorType estimator);
  * @return True if all test has passed. False otherwise.
  */
 bool stabilizerTest(void);
+
+/**
+ * Read the latest state estimate computed by the stabilizer module.
+ *
+ * @param stateCompressed Pointer to stateCompressed_t where the state should be copied to.
+ */
+void stabilizerGetLatestState(stateCompressed_t *stateCompressed);
+void stabilizerDecompressState(const stateCompressed_t *stateCompressed, state_t *state);
 
 #endif /* STABILIZER_H_ */

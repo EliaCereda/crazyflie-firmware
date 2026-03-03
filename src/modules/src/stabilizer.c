@@ -82,26 +82,7 @@ static rateSupervisor_t rateSupervisorContext;
 static bool rateWarningDisplayed = false;
 SemaphoreHandle_t xRateSupervisorSemaphore;
 
-static struct {
-  // position - mm
-  int16_t x;
-  int16_t y;
-  int16_t z;
-  // velocity - mm / sec
-  int16_t vx;
-  int16_t vy;
-  int16_t vz;
-  // acceleration - mm / sec^2
-  int16_t ax;
-  int16_t ay;
-  int16_t az;
-  // compressed quaternion, see quatcompress.h
-  int32_t quat;
-  // angular velocity - milliradians / sec
-  int16_t rateRoll;
-  int16_t ratePitch;
-  int16_t rateYaw;
-} stateCompressed;
+static stateCompressed_t stateCompressed;
 
 static struct {
   // position - mm
@@ -132,6 +113,10 @@ static void calcSensorToOutputLatency(const sensorData_t *sensorData)
 
 static void compressState()
 {
+  // kalmanCoreExternalizeState sets the same timestamp for all fields in state_t,
+  // arbitrarily use the one in state.position.
+  stateCompressed.timestamp = state.position.timestamp;
+
   stateCompressed.x = state.position.x * 1000.0f;
   stateCompressed.y = state.position.y * 1000.0f;
   stateCompressed.z = state.position.z * 1000.0f;
@@ -157,6 +142,44 @@ static void compressState()
   stateCompressed.rateYaw = sensorData.gyro.z * deg2millirad;
 }
 
+void stabilizerDecompressState(const stateCompressed_t *stateCompressed, state_t *state) {
+  state->position.timestamp = stateCompressed->timestamp;
+  state->position.x = stateCompressed->x / 1000.0f;
+  state->position.y = stateCompressed->y / 1000.0f;
+  state->position.z = stateCompressed->z / 1000.0f;
+
+  state->velocity.timestamp = stateCompressed->timestamp;
+  state->velocity.x = stateCompressed->vx / 1000.0f;
+  state->velocity.y = stateCompressed->vy / 1000.0f;
+  state->velocity.z = stateCompressed->vz / 1000.0f;
+
+  state->acc.timestamp = stateCompressed->timestamp;
+  state->acc.x = stateCompressed->ax / 9.81f / 1000.0f;
+  state->acc.y = stateCompressed->ay / 9.81f / 1000.0f;
+  state->acc.z = (stateCompressed->az / 9.81f * 1000.0f) - 1.0f;
+
+  float q[4];
+  quatdecompress(stateCompressed->quat, q);
+  state->attitudeQuaternion.x = q[0];
+  state->attitudeQuaternion.y = q[1];
+  state->attitudeQuaternion.z = q[2];
+  state->attitudeQuaternion.w = q[3];
+
+  {
+    quaternion_t q = state->attitudeQuaternion;
+    float yaw   = atan2f( 2*(q.x*q.y + q.w*q.z), q.w*q.w + q.x*q.x - q.y*q.y - q.z*q.z);
+    float pitch =  asinf(-2*(q.x*q.z - q.w*q.y));
+    float roll  = atan2f( 2*(q.y*q.z + q.w*q.x), q.w*q.w - q.x*q.x - q.y*q.y + q.z*q.z);
+
+    state->attitude.timestamp = stateCompressed->timestamp;
+    state->attitude.yaw = degrees(yaw);
+    state->attitude.pitch = -degrees(pitch);
+    state->attitude.roll = degrees(roll);
+  }
+  
+  // FIXME: state does not encode angular velocity, right now it is just discarded
+}
+
 static void compressSetpoint()
 {
   setpointCompressed.x = setpoint.position.x * 1000.0f;
@@ -172,11 +195,30 @@ static void compressSetpoint()
   setpointCompressed.az = setpoint.acceleration.z * 1000.0f;
 }
 
+static QueueHandle_t latestState;
+STATIC_MEM_QUEUE_ALLOC(latestState, 1, sizeof(stateCompressed_t));
+
+static void latestStateInit() {
+  latestState = STATIC_MEM_QUEUE_CREATE(latestState);
+  ASSERT(latestState);
+  xQueueSend(latestState, &stateCompressed, 0);
+}
+
+static void updateLatestState(const stateCompressed_t *stateCompressed) {
+  xQueueOverwrite(latestState, stateCompressed);
+}
+
+void stabilizerGetLatestState(stateCompressed_t *stateCompressed) {
+  const BaseType_t peekResult = xQueuePeek(latestState, stateCompressed, 0);
+  ASSERT(peekResult == pdTRUE);
+}
+
 void stabilizerInit(StateEstimatorType estimator)
 {
   if(isInit)
     return;
 
+  latestStateInit();
   sensorsInit();
   stateEstimatorInit(estimator);
   controllerInit(ControllerTypeAutoSelect);
@@ -359,6 +401,7 @@ static void stabilizerTask(void* param)
       // Compute compressed log formats
       compressState();
       compressSetpoint();
+      updateLatestState(&stateCompressed);
 
 #ifdef CONFIG_DECK_USD
       // Log data to uSD card if configured
